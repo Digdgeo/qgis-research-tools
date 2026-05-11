@@ -54,6 +54,7 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
 
     INPUT       = 'INPUT'
     EXTENT      = 'EXTENT'
+    INPUT_MARCO = 'INPUT_MARCO'
     ID_FIELD    = 'ID_FIELD'
     ALL_GEOMS   = 'ALL_GEOMS'
     OUT_FEATS   = 'OUT_FEATS'
@@ -119,6 +120,14 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
             QgsProcessingParameterExtent(
                 self.EXTENT,
                 self.tr('Extent del área de movimiento')
+            )
+        )
+        self.addParameter(
+            QgsProcessingParameterFeatureSource(
+                self.INPUT_MARCO,
+                self.tr('Polígono marco exacto (opcional, sobreescribe el extent)'),
+                [QgsProcessing.TypeVectorPolygon],
+                optional=True
             )
         )
         self.addParameter(
@@ -194,16 +203,30 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
             f'Tipo de geometría: {type_label} | Modo de contención: {modo}'
         ))
 
-        # Extent
+        # Extent base (siempre requerido)
         extent = self.parameterAsExtent(parameters, self.EXTENT, context,
                                         source.sourceCrs())
         minx, miny = extent.xMinimum(), extent.yMinimum()
         maxx, maxy = extent.xMaximum(), extent.yMaximum()
-        marco_poly  = shapely_box(minx, miny, maxx, maxy)
 
-        feedback.pushInfo(self.tr(
-            f'Extent: X [{minx:.1f} – {maxx:.1f}]  Y [{miny:.1f} – {maxy:.1f}]'
-        ))
+        # Polígono marco exacto (opcional): sobreescribe el extent si se proporciona
+        marco_source = self.parameterAsSource(parameters, self.INPUT_MARCO, context)
+        if marco_source is not None and marco_source.featureCount() > 0:
+            marco_feat = next(marco_source.getFeatures())
+            marco_geom = wkt_loads(marco_feat.geometry().asWkt())
+            if marco_geom.geom_type == 'MultiPolygon':
+                marco_geom = max(marco_geom.geoms, key=lambda p: p.area)
+            marco_poly = marco_geom
+            minx, miny, maxx, maxy = marco_poly.bounds
+            is_rect = False
+            feedback.pushInfo(self.tr('Usando polígono marco exacto (geometría irregular).'))
+        else:
+            marco_poly = shapely_box(minx, miny, maxx, maxy)
+            is_rect = True
+            feedback.pushInfo(self.tr(
+                f'Usando extent rectangular: X [{minx:.1f} – {maxx:.1f}]  '
+                f'Y [{miny:.1f} – {maxy:.1f}]'
+            ))
 
         # Esquemas de campos
         fields_in   = source.fields()
@@ -261,7 +284,7 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
             # Calcular desplazamiento
             if all_geoms:
                 xoff, yoff = self._displace_all_geoms(
-                    rotated, minx, miny, maxx, maxy, gid, feedback
+                    rotated, marco_poly, minx, miny, maxx, maxy, is_rect, gid, feedback
                 )
             else:
                 xoff, yoff = self._displace_ceg(
@@ -317,10 +340,16 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
         ))
         return 0.0, 0.0
 
-    def _displace_all_geoms(self, rotated, minx, miny, maxx, maxy, gid, feedback):
+    def _displace_all_geoms(self, rotated, marco_poly, minx, miny, maxx, maxy,
+                            is_rect, gid, feedback):
         """
-        Deriva el rango válido de desplazamiento del bbox de la unión de todas
-        las geometrías ya rotadas. Un único sorteo, sin reintentos.
+        Calcula un desplazamiento que garantiza que todas las geometrías rotadas
+        queden dentro del marco.
+
+        - Extent rectangular (is_rect=True): deriva el rango válido directamente
+          del bbox del grupo rotado. Un único sorteo, sin reintentos.
+        - Polígono irregular (is_rect=False): usa el bbox del polígono para acotar
+          el espacio de búsqueda y verifica la contención exacta con reintentos.
         """
         all_bounds = [g.bounds for g in rotated]
         rx_min = min(b[0] for b in all_bounds)
@@ -333,15 +362,32 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
 
         if xoff_min > xoff_max or yoff_min > yoff_max:
             feedback.pushWarning(self.tr(
-                f'El grupo {gid} es más grande que el extent tras la rotación. '
+                f'El grupo {gid} es más grande que el marco tras la rotación. '
                 f'El grupo no se moverá.'
             ))
             return 0.0, 0.0
 
-        xoff = round(random.uniform(xoff_min, xoff_max), 2)
-        yoff = round(random.uniform(yoff_min, yoff_max), 2)
-        feedback.pushInfo(self.tr(f'  Grupo {gid}: dx={xoff:.1f} dy={yoff:.1f}'))
-        return xoff, yoff
+        if is_rect:
+            # Rango garantizado: un único sorteo
+            xoff = round(random.uniform(xoff_min, xoff_max), 2)
+            yoff = round(random.uniform(yoff_min, yoff_max), 2)
+            feedback.pushInfo(self.tr(f'  Grupo {gid}: dx={xoff:.1f} dy={yoff:.1f}'))
+            return xoff, yoff
+
+        # Polígono irregular: verificamos la contención del bbox rotado del grupo
+        rot_bbox = shapely_box(rx_min, ry_min, rx_max, ry_max)
+        for _ in range(self.MAX_TRIES):
+            xoff = round(random.uniform(xoff_min, xoff_max), 2)
+            yoff = round(random.uniform(yoff_min, yoff_max), 2)
+            if marco_poly.contains(affinity.translate(rot_bbox, xoff, yoff)):
+                feedback.pushInfo(self.tr(f'  Grupo {gid}: dx={xoff:.1f} dy={yoff:.1f}'))
+                return xoff, yoff
+
+        feedback.pushWarning(self.tr(
+            f'No se encontró desplazamiento válido para el grupo {gid} '
+            f'tras {self.MAX_TRIES} intentos. El grupo no se moverá.'
+        ))
+        return 0.0, 0.0
 
     # ------------------------------------------------------------------
     # Utilidades
