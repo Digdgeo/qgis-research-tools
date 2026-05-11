@@ -26,15 +26,25 @@ Computes the most significant lines for each polygon in a vector layer:
 > **MultiPolygon features:** only the largest part of each MultiPolygon is processed.
 > If you need all parts to be analysed individually, **explode the layer first** (*Vector → Geometry Tools → Multipart to Singleparts*) so that each polygon becomes a separate feature.
 
-<!-- Screenshot placeholder -->
-<!-- ![Max Line Inside Polygon](images/mlip_example.png) -->
+![Max Line Inside Polygon dialog](pics/mlip_tool_overview.png)
+
+**Example — Canary Islands:**
+
+![Canary Islands input](pics/canary_general.png)
+*Input: Canary Islands polygons.*
+
+![Canary Islands results](pics/canary_general_results.png)
+*Results: interior lines (orange), exterior lines (blue) and perpendiculars for each island.*
+
+![Tenerife and La Gomera detail](pics/canary_general_results_tenerife_la_gomera.png)
+*Detail of Tenerife and La Gomera showing all four outputs.*
 
 ---
 
 ### 2. Random Move Geometries Inside (`rmpi_qgis.py`)
 
 Takes a vector layer — **points, lines or polygons** — where each feature belongs to a group
-(identified by a field) and randomly moves and rotates each group within a user-defined extent.
+(identified by a field) and randomly moves and rotates each group within a user-defined area.
 The geometry type is detected automatically.
 
 For each group the algorithm:
@@ -60,11 +70,11 @@ For each group the algorithm:
 
 | Mode | Behaviour | Best for |
 |------|-----------|----------|
-| **Center of gravity only** (default) | Ensures the center of gravity lands inside the extent. Individual geometries — especially large polygons or long lines — may partially extend outside. | Point clouds, small features |
-| **All geometries** | Rotates the group first, derives the valid displacement range from the bounding box of the rotated union, and guarantees no geometry goes outside. If the group is larger than the extent, it is not moved and a warning is raised. | Polygons (e.g. home ranges), lines |
+| **Center of gravity only** (default) | Ensures the center of gravity lands inside the area. Individual geometries — especially large polygons or long lines — may partially extend outside. | Point clouds, small features |
+| **All geometries** | Rotates the group first, derives the valid displacement range from the bounding box of the rotated union, and guarantees no geometry goes outside. If the group is larger than the area, it is not moved and a warning is raised. | Polygons (e.g. home ranges), lines |
 
 > **Note for polygon layers:** in *center of gravity* mode, polygon borders can extend beyond the
-> extent boundary. If you need all geometries fully contained — for example when working with
+> area boundary. If you need all geometries fully contained — for example when working with
 > home range polygons — enable the *All geometries* option.
 
 **Outputs:**
@@ -74,8 +84,23 @@ For each group the algorithm:
 - Original centers of gravity
 - Original geometric centroids
 
-<!-- Screenshot placeholder -->
-<!-- ![Random Move Geometries Inside](images/rmpi_example.png) -->
+![Random Move Geometries Inside dialog](pics/rmpi_tool_overview.png)
+
+**Example — point clouds (bird observation groups, Andalusia):**
+
+![Points input](pics/rmpi_pts_andalucia_hr.png)
+*Input: three groups of observation points inside Andalusia.*
+
+![Points results](pics/rmpi_pts_andalucia_hr_results.png)
+*Results: groups randomly moved and rotated. Orange dots show the original centers of gravity.*
+
+**Example — home range polygons (Spain):**
+
+![Home ranges input](pics/rmpi_pg_hr.png)
+*Input: three home range polygons distributed across Spain.*
+
+![Home ranges results](pics/rmpi_pg_hr_results.png)
+*Results: polygons randomly moved and rotated within the extent, with centers of gravity shown.*
 
 ---
 
@@ -113,29 +138,23 @@ No additional installation is needed.
 | Calculate mid-point perpendicular | Boolean | Default: `True` |
 | Calculate maximum perpendicular | Boolean | Default: `True` |
 
-<!-- Screenshot placeholder -->
-<!-- ![MLIP dialog](images/mlip_dialog.png) -->
-
 ---
 
 ### Random Move Geometries Inside
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| Vector layer | Vector (Point / Line / Polygon) | Input layer. Geometry type is detected automatically. Must contain a group identifier field. |
-| Movement extent | Extent | Area within which groups are placed. Can be drawn on the map, typed manually, or taken from the extent of any loaded layer. |
+| Input layer | Vector (Point / Line / Polygon) | Input layer. Geometry type is detected automatically. Must contain a group identifier field. |
+| Movement area — rectangular extent | Extent | Drawn on the map, entered manually, or taken from any loaded layer's extent. |
+| Movement area — exact polygon layer | Vector (Polygon) | If provided, uses the precise polygon boundary instead of the extent rectangle. |
 | Group identifier field | Field | Field that identifies which group each feature belongs to. Default: `ID_progres`. |
-| All geometries inside extent | Boolean | Default: `False` (center of gravity mode). Set to `True` to guarantee all geometries remain fully within the extent. Recommended for polygon layers. |
-
-<!-- Screenshot placeholder -->
-<!-- ![RMPI dialog](images/rmpi_dialog.png) -->
+| All geometries inside area | Boolean | Default: `False` (center of gravity mode). Set to `True` to guarantee all geometries remain fully within the area. Recommended for polygon layers. |
 
 ---
 
 ## Roadmap
 
 - [ ] Add remaining scripts (in progress)
-- [ ] Add screenshot examples to this README
 - [ ] Write unit tests
 - [ ] Package as a QGIS plugin
 - [ ] Submit to the QGIS **Research Tools** processing provider
