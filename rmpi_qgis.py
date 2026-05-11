@@ -2,27 +2,31 @@
 """
 rmpi_qgis.py — Random Move Geometries Inside (QGIS Processing Algorithm)
 
-Toma una capa vectorial (puntos, líneas o polígonos) donde cada feature pertenece
-a un grupo (campo seleccionable) y mueve aleatoriamente cada grupo dentro de un
-extent definido por el usuario.
+Takes a vector layer (points, lines or polygons) where each feature belongs to a group
+(identified by a selected field) and randomly moves and rotates each group within a
+user-defined area.
 
-El proceso para cada grupo:
-  1. Calcular el centro de gravedad (ceg) del grupo a partir de los centroides de
-     sus features, y el centroide geométrico (cc) como centro del bounding box.
-  2. Rotar todas las geometrías del grupo un ángulo aleatorio (0-360°) alrededor del ceg.
-  3. Calcular un desplazamiento aleatorio que lleve el grupo al interior del extent.
-  4. Trasladar las geometrías rotadas.
+The movement area can be defined in two ways (mutually exclusive, polygon takes precedence):
+  - Rectangular extent: drawn on the map, entered manually, or taken from any loaded layer.
+  - Exact polygon layer: uses the precise polygon boundary for containment checks.
 
-Modos de contención:
-  - Solo ceg (por defecto): garantiza que el ceg quede dentro del extent.
-  - Todas las geometrías: calcula el bbox de la unión de las geometrías rotadas y
-    deriva directamente el rango válido de desplazamiento. Si el grupo es más grande
-    que el extent, no se mueve y se emite un aviso.
+Process for each group:
+  1. Compute the center of gravity (cog) as the mean of feature centroids, and the
+     geometric centroid (cc) as the center of the group's bounding box.
+  2. Rotate all geometries by a random angle (0–360°) around the center of gravity.
+  3. Calculate a random displacement that places the group inside the movement area.
+  4. Apply the translation.
 
-Instalación:
-    Copia este archivo en:
-      ~/.local/share/QGIS/QGIS3/profiles/default/processing/scripts/
-    y recarga los scripts en QGIS (Processing > Scripts > Recargar scripts).
+Containment modes:
+  - Center of gravity only (default): ensures the cog lands inside the area.
+    Individual geometries — especially large polygons or long lines — may partially extend outside.
+  - All geometries: guarantees that no geometry goes outside the movement area.
+
+Installation:
+    Copy this file to:
+      ~/.local/share/QGIS/QGIS3/profiles/default/processing/scripts/   (Linux / macOS)
+      %APPDATA%\QGIS\QGIS3\profiles\default\processing\scripts\        (Windows)
+    Then reload scripts in QGIS: Processing > Scripts > Reload scripts.
 """
 
 import random
@@ -63,10 +67,10 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
     OUT_CG_ORIG = 'OUT_CG_ORIG'
     OUT_CC_ORIG = 'OUT_CC_ORIG'
 
-    MAX_TRIES = 100  # solo usado en modo ceg
+    MAX_TRIES = 100
 
     # ------------------------------------------------------------------
-    # Metadatos del algoritmo
+    # Algorithm metadata
     # ------------------------------------------------------------------
     def tr(self, string):
         return QCoreApplication.translate('Processing', string)
@@ -78,7 +82,7 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
         return 'randommovegeometriesinside'
 
     def displayName(self):
-        return self.tr('Mover y rotar grupos de geometrías aleatoriamente')
+        return self.tr('Random Move Geometries Inside')
 
     def group(self):
         return self.tr('Digdgeo')
@@ -88,44 +92,45 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
 
     def shortHelpString(self):
         return self.tr(
-            'Mueve y rota grupos de geometrías (puntos, líneas o polígonos) de forma '
-            'aleatoria dentro de un extent.\n\n'
-            'El tipo de geometría se detecta automáticamente. Para líneas y polígonos, '
-            'el centro de gravedad del grupo se calcula como la media de los centroides '
-            'de sus features.\n\n'
-            'Modos de contención:\n'
-            '• Solo ceg (por defecto): garantiza que el centro de gravedad quede dentro '
-            'del extent. Algunas geometrías pueden salirse.\n'
-            '• Todas las geometrías: calcula el bbox de la unión rotada del grupo y '
-            'deriva el rango válido de desplazamiento en un único sorteo. Si el grupo '
-            'es más grande que el extent, no se mueve y se emite un aviso.\n\n'
-            'Salidas:\n'
-            '• Geometrías movidas y rotadas (atributos originales preservados)\n'
-            '• Centros de gravedad originales y desplazados\n'
-            '• Centroides geométricos originales y desplazados'
+            'Randomly moves and rotates groups of geometries (points, lines or polygons) '
+            'within a user-defined area. The geometry type is detected automatically.\n\n'
+            'Movement area — choose one:\n'
+            '• Rectangular extent: draw on the map, enter coordinates, or use any layer\'s extent.\n'
+            '• Exact polygon layer: uses the precise polygon boundary. '
+            'If provided, it overrides the extent.\n\n'
+            'Containment modes:\n'
+            '• Center of gravity only (default): the center of gravity lands inside the area. '
+            'Parts of large polygons or long lines may extend outside.\n'
+            '• All geometries: guarantees every geometry stays fully within the area. '
+            'Recommended for polygon layers (e.g. home ranges). '
+            'Groups larger than the area are not moved and a warning is raised.\n\n'
+            'Outputs:\n'
+            '• Moved and rotated geometries (original attributes preserved)\n'
+            '• Original and displaced centers of gravity\n'
+            '• Original and displaced geometric centroids'
         )
 
     # ------------------------------------------------------------------
-    # Parámetros de entrada y salida
+    # Parameters
     # ------------------------------------------------------------------
     def initAlgorithm(self, config=None):
         self.addParameter(
             QgsProcessingParameterFeatureSource(
                 self.INPUT,
-                self.tr('Capa vectorial (puntos, líneas o polígonos)'),
+                self.tr('Input layer (points, lines or polygons)'),
                 [QgsProcessing.TypeVectorAnyGeometry]
             )
         )
         self.addParameter(
             QgsProcessingParameterExtent(
                 self.EXTENT,
-                self.tr('Extent del área de movimiento')
+                self.tr('Movement area — rectangular extent')
             )
         )
         self.addParameter(
             QgsProcessingParameterFeatureSource(
                 self.INPUT_MARCO,
-                self.tr('Polígono marco exacto (opcional, sobreescribe el extent)'),
+                self.tr('Movement area — exact polygon layer (overrides extent if set)'),
                 [QgsProcessing.TypeVectorPolygon],
                 optional=True
             )
@@ -133,7 +138,7 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterField(
                 self.ID_FIELD,
-                self.tr('Campo identificador de grupo'),
+                self.tr('Group identifier field'),
                 parentLayerParameterName=self.INPUT,
                 defaultValue='ID_progres'
             )
@@ -141,75 +146,73 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterBoolean(
                 self.ALL_GEOMS,
-                self.tr('Asegurar que todas las geometrías queden dentro del extent'),
+                self.tr('Ensure all geometries stay within the movement area'),
                 defaultValue=False
             )
         )
         self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUT_FEATS,
-                self.tr('Geometrías movidas y rotadas'),
+                self.tr('Moved and rotated geometries'),
                 type=QgsProcessing.TypeVectorAnyGeometry
             )
         )
         self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUT_CG,
-                self.tr('Centros de gravedad desplazados'),
+                self.tr('Displaced centers of gravity'),
                 type=QgsProcessing.TypeVectorPoint
             )
         )
         self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUT_CC,
-                self.tr('Centroides geométricos desplazados'),
+                self.tr('Displaced geometric centroids'),
                 type=QgsProcessing.TypeVectorPoint
             )
         )
         self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUT_CG_ORIG,
-                self.tr('Centros de gravedad originales'),
+                self.tr('Original centers of gravity'),
                 type=QgsProcessing.TypeVectorPoint
             )
         )
         self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUT_CC_ORIG,
-                self.tr('Centroides geométricos originales'),
+                self.tr('Original geometric centroids'),
                 type=QgsProcessing.TypeVectorPoint
             )
         )
 
     # ------------------------------------------------------------------
-    # Lógica principal
+    # Main logic
     # ------------------------------------------------------------------
     def processAlgorithm(self, parameters, context, feedback):
         source    = self.parameterAsSource(parameters, self.INPUT, context)
         id_field  = self.parameterAsString(parameters, self.ID_FIELD, context)
         all_geoms = self.parameterAsBoolean(parameters, self.ALL_GEOMS, context)
 
-        # Tipo de geometría
+        # Geometry type detection
         wkb_type  = source.wkbType()
         geom_type = QgsWkbTypes.geometryType(wkb_type)
         type_label = {
-            QgsWkbTypes.PointGeometry:   'Punto',
-            QgsWkbTypes.LineGeometry:    'Línea',
-            QgsWkbTypes.PolygonGeometry: 'Polígono',
-        }.get(geom_type, 'Desconocido')
+            QgsWkbTypes.PointGeometry:   'Point',
+            QgsWkbTypes.LineGeometry:    'Line',
+            QgsWkbTypes.PolygonGeometry: 'Polygon',
+        }.get(geom_type, 'Unknown')
 
-        modo = self.tr('todas las geometrías') if all_geoms else self.tr('solo ceg')
-        feedback.pushInfo(self.tr(
-            f'Tipo de geometría: {type_label} | Modo de contención: {modo}'
-        ))
+        mode = 'all geometries' if all_geoms else 'center of gravity only'
+        feedback.pushInfo(f'Geometry type: {type_label} | Containment mode: {mode}')
 
-        # Extent base (siempre requerido)
+        # Rectangular extent (always required)
         extent = self.parameterAsExtent(parameters, self.EXTENT, context,
                                         source.sourceCrs())
         minx, miny = extent.xMinimum(), extent.yMinimum()
         maxx, maxy = extent.xMaximum(), extent.yMaximum()
 
-        # Polígono marco exacto (opcional): sobreescribe el extent si se proporciona
+        # Exact polygon layer (optional) — overrides extent if provided
         marco_source = self.parameterAsSource(parameters, self.INPUT_MARCO, context)
         if marco_source is not None and marco_source.featureCount() > 0:
             marco_feat = next(marco_source.getFeatures())
@@ -219,79 +222,79 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
             marco_poly = marco_geom
             minx, miny, maxx, maxy = marco_poly.bounds
             is_rect = False
-            feedback.pushInfo(self.tr('Usando polígono marco exacto (geometría irregular).'))
+            feedback.pushInfo('Using exact polygon boundary for containment.')
         else:
             marco_poly = shapely_box(minx, miny, maxx, maxy)
             is_rect = True
-            feedback.pushInfo(self.tr(
-                f'Usando extent rectangular: X [{minx:.1f} – {maxx:.1f}]  '
+            feedback.pushInfo(
+                f'Using rectangular extent: X [{minx:.1f} – {maxx:.1f}]  '
                 f'Y [{miny:.1f} – {maxy:.1f}]'
-            ))
+            )
 
-        # Esquemas de campos
+        # Field schemas
         fields_in   = source.fields()
         crs         = source.sourceCrs()
 
-        fields_cc = QgsFields()
-        fields_cc.append(QgsField('id',     QVariant.String))
-        fields_cc.append(QgsField('angulo', QVariant.Int))
-        fields_cc.append(QgsField('xoff',   QVariant.Double))
-        fields_cc.append(QgsField('yoff',   QVariant.Double))
+        fields_cg = QgsFields()
+        fields_cg.append(QgsField('id',     QVariant.String))
+        fields_cg.append(QgsField('angle',  QVariant.Int))
+        fields_cg.append(QgsField('xoff',   QVariant.Double))
+        fields_cg.append(QgsField('yoff',   QVariant.Double))
 
         fields_orig = QgsFields()
         fields_orig.append(QgsField('id', QVariant.String))
 
         (sink_feats,   dest_feats)   = self.parameterAsSink(parameters, self.OUT_FEATS,   context, fields_in,   wkb_type,          crs)
-        (sink_cg,      dest_cg)      = self.parameterAsSink(parameters, self.OUT_CG,      context, fields_cc,   QgsWkbTypes.Point, crs)
-        (sink_cc,      dest_cc)      = self.parameterAsSink(parameters, self.OUT_CC,      context, fields_cc,   QgsWkbTypes.Point, crs)
+        (sink_cg,      dest_cg)      = self.parameterAsSink(parameters, self.OUT_CG,      context, fields_cg,   QgsWkbTypes.Point, crs)
+        (sink_cc,      dest_cc)      = self.parameterAsSink(parameters, self.OUT_CC,      context, fields_cg,   QgsWkbTypes.Point, crs)
         (sink_cg_orig, dest_cg_orig) = self.parameterAsSink(parameters, self.OUT_CG_ORIG, context, fields_orig, QgsWkbTypes.Point, crs)
         (sink_cc_orig, dest_cc_orig) = self.parameterAsSink(parameters, self.OUT_CC_ORIG, context, fields_orig, QgsWkbTypes.Point, crs)
 
-        # Agrupación de features por ID
+        # Group features by ID
         grupos = {}
         for feat in source.getFeatures():
             gid = feat[id_field]
             grupos.setdefault(gid, []).append(feat)
 
         total = len(grupos)
-        feedback.pushInfo(self.tr(f'Se han encontrado {total} grupos.'))
+        feedback.pushInfo(f'Found {total} groups.')
 
-        # Proceso principal
+        # Main processing loop
         for idx, (gid, feats) in enumerate(grupos.items()):
             if feedback.isCanceled():
                 break
 
             feedback.setProgress(int(idx / total * 100))
-            feedback.pushInfo(self.tr(f'Procesando grupo {gid}...'))
+            feedback.pushInfo(f'Processing group {gid}...')
 
-            # Centroides de cada feature (funciona para puntos, líneas y polígonos)
+            # Centroids (works for points, lines and polygons)
             centroids = [self._feature_centroid(f, geom_type) for f in feats]
             xs = [c[0] for c in centroids]
             ys = [c[1] for c in centroids]
 
-            ceg = (float(np.mean(xs)), float(np.mean(ys)))
+            cog = (float(np.mean(xs)), float(np.mean(ys)))
             cc  = ((max(xs) + min(xs)) / 2.0, (max(ys) + min(ys)) / 2.0)
             ang = random.randint(0, 360)
 
-            # Centroides originales
-            self._write_orig(sink_cg_orig, fields_orig, gid, Point(ceg))
+            # Write original centroids
+            self._write_orig(sink_cg_orig, fields_orig, gid, Point(cog))
             self._write_orig(sink_cc_orig, fields_orig, gid, Point(cc))
 
-            # Convertir a shapely y rotar alrededor del ceg
+            # Convert to shapely and rotate around the center of gravity
             shapely_geoms = [wkt_loads(f.geometry().asWkt()) for f in feats]
-            rotated       = [affinity.rotate(g, ang, origin=ceg) for g in shapely_geoms]
+            rotated       = [affinity.rotate(g, ang, origin=cog) for g in shapely_geoms]
 
-            # Calcular desplazamiento
+            # Compute displacement
             if all_geoms:
                 xoff, yoff = self._displace_all_geoms(
                     rotated, marco_poly, minx, miny, maxx, maxy, is_rect, gid, feedback
                 )
             else:
-                xoff, yoff = self._displace_ceg(
-                    ceg, marco_poly, minx, miny, maxx, maxy, gid, feedback
+                xoff, yoff = self._displace_cog(
+                    cog, marco_poly, minx, miny, maxx, maxy, gid, feedback
                 )
 
-            # Trasladar y escribir features
+            # Translate and write features
             for feat, rg in zip(feats, rotated):
                 rgt = affinity.translate(rg, xoff, yoff)
                 out = QgsFeature(fields_in)
@@ -299,11 +302,11 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
                 out.setGeometry(QgsGeometry.fromWkt(rgt.wkt))
                 sink_feats.addFeature(out, QgsFeatureSink.FastInsert)
 
-            # Centroides desplazados
-            ceg_moved = affinity.translate(Point(ceg), xoff, yoff)
+            # Write displaced centroids
+            cog_moved = affinity.translate(Point(cog), xoff, yoff)
             cc_moved  = affinity.translate(Point(cc),  xoff, yoff)
-            self._write_point(sink_cg, fields_cc, gid, ang, xoff, yoff, ceg_moved)
-            self._write_point(sink_cc, fields_cc, gid, ang, xoff, yoff, cc_moved)
+            self._write_point(sink_cg, fields_cg, gid, ang, xoff, yoff, cog_moved)
+            self._write_point(sink_cc, fields_cg, gid, ang, xoff, yoff, cc_moved)
 
         return {
             self.OUT_FEATS:   dest_feats,
@@ -314,42 +317,43 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
         }
 
     # ------------------------------------------------------------------
-    # Modos de desplazamiento
+    # Displacement methods
     # ------------------------------------------------------------------
-    def _displace_ceg(self, ceg, marco_poly, minx, miny, maxx, maxy, gid, feedback):
-        """Desplazamiento aleatorio por cuadrantes: solo el ceg debe quedar dentro."""
-        esquinas = {
+    def _displace_cog(self, cog, marco_poly, minx, miny, maxx, maxy, gid, feedback):
+        """
+        Random quadrant-based displacement: only the center of gravity
+        needs to land inside the movement area. Up to MAX_TRIES attempts.
+        """
+        corners = {
             'NW': (minx, maxy), 'NE': (maxx, maxy),
             'SW': (minx, miny), 'SE': (maxx, miny),
         }
         for _ in range(self.MAX_TRIES):
-            cuadrante = random.choice(list(esquinas.keys()))
-            cx, cy    = esquinas[cuadrante]
-            dx, dy    = cx - ceg[0], cy - ceg[1]
+            quadrant  = random.choice(list(corners.keys()))
+            cx, cy    = corners[quadrant]
+            dx, dy    = cx - cog[0], cy - cog[1]
             xoff = round(random.uniform(min(0, dx), max(0, dx)), 2)
             yoff = round(random.uniform(min(0, dy), max(0, dy)), 2)
-            if marco_poly.contains(affinity.translate(Point(ceg), xoff, yoff)):
-                feedback.pushInfo(self.tr(
-                    f'  Grupo {gid} → {cuadrante} (dx={xoff:.1f}, dy={yoff:.1f})'
-                ))
+            if marco_poly.contains(affinity.translate(Point(cog), xoff, yoff)):
+                feedback.pushInfo(f'  Group {gid} → {quadrant} (dx={xoff:.1f}, dy={yoff:.1f})')
                 return xoff, yoff
 
-        feedback.pushWarning(self.tr(
-            f'No se encontró desplazamiento válido para el grupo {gid} '
-            f'tras {self.MAX_TRIES} intentos. El grupo no se moverá.'
-        ))
+        feedback.pushWarning(
+            f'Could not find a valid displacement for group {gid} '
+            f'after {self.MAX_TRIES} attempts. Group will not be moved.'
+        )
         return 0.0, 0.0
 
     def _displace_all_geoms(self, rotated, marco_poly, minx, miny, maxx, maxy,
                             is_rect, gid, feedback):
         """
-        Calcula un desplazamiento que garantiza que todas las geometrías rotadas
-        queden dentro del marco.
+        Computes a displacement that guarantees all rotated geometries stay
+        within the movement area.
 
-        - Extent rectangular (is_rect=True): deriva el rango válido directamente
-          del bbox del grupo rotado. Un único sorteo, sin reintentos.
-        - Polígono irregular (is_rect=False): usa el bbox del polígono para acotar
-          el espacio de búsqueda y verifica la contención exacta con reintentos.
+        - Rectangular extent: derives the valid displacement range analytically
+          from the rotated group's bounding box. Single random draw, no retries.
+        - Exact polygon: samples within the polygon's bounding box and checks
+          containment of the rotated group's bbox. Up to MAX_TRIES attempts.
         """
         all_bounds = [g.bounds for g in rotated]
         rx_min = min(b[0] for b in all_bounds)
@@ -361,48 +365,47 @@ class RandomMoveGeometriesInside(QgsProcessingAlgorithm):
         yoff_min, yoff_max = miny - ry_min, maxy - ry_max
 
         if xoff_min > xoff_max or yoff_min > yoff_max:
-            feedback.pushWarning(self.tr(
-                f'El grupo {gid} es más grande que el marco tras la rotación. '
-                f'El grupo no se moverá.'
-            ))
+            feedback.pushWarning(
+                f'Group {gid} is larger than the movement area after rotation. '
+                f'Group will not be moved.'
+            )
             return 0.0, 0.0
 
         if is_rect:
-            # Rango garantizado: un único sorteo
             xoff = round(random.uniform(xoff_min, xoff_max), 2)
             yoff = round(random.uniform(yoff_min, yoff_max), 2)
-            feedback.pushInfo(self.tr(f'  Grupo {gid}: dx={xoff:.1f} dy={yoff:.1f}'))
+            feedback.pushInfo(f'  Group {gid}: dx={xoff:.1f} dy={yoff:.1f}')
             return xoff, yoff
 
-        # Polígono irregular: verificamos la contención del bbox rotado del grupo
+        # Exact polygon: check that the rotated group's bbox fits inside
         rot_bbox = shapely_box(rx_min, ry_min, rx_max, ry_max)
         for _ in range(self.MAX_TRIES):
             xoff = round(random.uniform(xoff_min, xoff_max), 2)
             yoff = round(random.uniform(yoff_min, yoff_max), 2)
             if marco_poly.contains(affinity.translate(rot_bbox, xoff, yoff)):
-                feedback.pushInfo(self.tr(f'  Grupo {gid}: dx={xoff:.1f} dy={yoff:.1f}'))
+                feedback.pushInfo(f'  Group {gid}: dx={xoff:.1f} dy={yoff:.1f}')
                 return xoff, yoff
 
-        feedback.pushWarning(self.tr(
-            f'No se encontró desplazamiento válido para el grupo {gid} '
-            f'tras {self.MAX_TRIES} intentos. El grupo no se moverá.'
-        ))
+        feedback.pushWarning(
+            f'Could not find a valid displacement for group {gid} '
+            f'after {self.MAX_TRIES} attempts. Group will not be moved.'
+        )
         return 0.0, 0.0
 
     # ------------------------------------------------------------------
-    # Utilidades
+    # Helpers
     # ------------------------------------------------------------------
     def _feature_centroid(self, feat, geom_type):
-        """Devuelve (x, y) del centroide de la feature, sea del tipo que sea."""
+        """Returns (x, y) centroid of a feature regardless of geometry type."""
         if geom_type == QgsWkbTypes.PointGeometry:
             pt = feat.geometry().asPoint()
         else:
             pt = feat.geometry().centroid().asPoint()
         return (pt.x(), pt.y())
 
-    def _write_point(self, sink, fields, gid, angulo, xoff, yoff, point):
+    def _write_point(self, sink, fields, gid, angle, xoff, yoff, point):
         feat = QgsFeature(fields)
-        feat.setAttributes([str(gid), int(angulo), float(xoff), float(yoff)])
+        feat.setAttributes([str(gid), int(angle), float(xoff), float(yoff)])
         feat.setGeometry(QgsGeometry.fromWkt(point.wkt))
         sink.addFeature(feat, QgsFeatureSink.FastInsert)
 
