@@ -38,10 +38,23 @@ Takes a vector layer — **points, lines or polygons** — where each feature be
 The geometry type is detected automatically.
 
 For each group the algorithm:
-1. Computes the **center of gravity** (mean of feature centroids) and the **geometric centroid** (center of the bounding box).
-2. Picks a random rotation angle (0–360°) and rotates all geometries around the center of gravity.
-3. Calculates a random displacement that places the group inside the extent.
+1. Computes the **center of gravity (CoG)** and the **geometric centroid (CC)**, then rotates all geometries around the CoG.
+2. Picks a random rotation angle (0–360°) and applies it around the CoG.
+3. Calculates a random displacement that places the group inside the movement area.
 4. Applies the translation.
+
+**How CoG and CC are computed by geometry type:**
+
+| Geometry | Center of gravity (CoG) | Geometric centroid (CC) |
+|----------|------------------------|------------------------|
+| **Points** | Arithmetic mean of all point coordinates. Each point counts equally as one observation. | Center of the group's bounding box. Useful when the point cloud has outliers that skew the mean. |
+| **Lines** | Mean of each line's geometric centroid (midpoint by length, invariant to vertex density). | Center of the bounding box of those centroids. |
+| **Polygons** | Mean of each polygon's geometric centroid (centre of mass by area, invariant to vertex density). | Center of the bounding box of those centroids. |
+
+> **Note for lines and polygons:** when each group contains a single feature (e.g. one home range polygon
+> per individual), CoG and CC will always coincide — both equal the geometric centroid of that feature.
+> The mean of vertex coordinates is intentionally avoided for lines and polygons, since vertex density
+> is not uniform and would bias the result toward densely sampled sections.
 
 **Containment modes:**
 
