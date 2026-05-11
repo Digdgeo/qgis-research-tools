@@ -26,7 +26,7 @@ Computes the most significant lines for each polygon in a vector layer:
 > **MultiPolygon features:** only the largest part of each MultiPolygon is processed.
 > If you need all parts to be analysed individually, **explode the layer first** (*Vector → Geometry Tools → Multipart to Singleparts*) so that each polygon becomes a separate feature.
 
-![Max Line Inside Polygon dialog](pics/mlip_tool_overview.png)
+![Max Line Inside Polygon dialog](pics/mlpi_tool_overview.png)
 
 **Example — Canary Islands:**
 
