@@ -19,7 +19,12 @@ Computes the most significant lines for each polygon in a vector layer:
 | **Mid-point perpendicular** | Perpendicular to the interior line, clipped to the polygon boundary |
 | **Maximum perpendicular** | The parallel to the above with the greatest length inside the polygon (maximum width) |
 
-> The algorithm uses a brute-force O(n²) approach over the polygon vertices. For highly detailed polygons, consider simplifying the geometry beforehand.
+> **Performance:** the algorithm compares all unique vertex pairs within each polygon (O(n²) complexity).
+> The number of comparisons is `n × (n-1) / 2`, so a polygon with 1,000 vertices produces ~500,000 comparisons.
+> For detailed polygons (e.g. municipal boundaries), **run a simplification first** (*Vector → Geometry Tools → Simplify*) to reduce vertex count before using this tool.
+
+> **MultiPolygon features:** only the largest part of each MultiPolygon is processed.
+> If you need all parts to be analysed individually, **explode the layer first** (*Vector → Geometry Tools → Multipart to Singleparts*) so that each polygon becomes a separate feature.
 
 <!-- Screenshot placeholder -->
 <!-- ![Max Line Inside Polygon](images/mlip_example.png) -->
