@@ -41,10 +41,12 @@ class MaxLineInsidePolygon(QgsProcessingAlgorithm):
     CALC_EXT     = 'CALC_EXT'
     CALC_PERP    = 'CALC_PERP'
     CALC_MAXPERP = 'CALC_MAXPERP'
+    CALC_MORPH   = 'CALC_MORPH'
     OUT_INT      = 'OUT_INT'
     OUT_EXT      = 'OUT_EXT'
     OUT_PERP     = 'OUT_PERP'
     OUT_MAXPERP  = 'OUT_MAXPERP'
+    OUT_MORPH    = 'OUT_MORPH'
 
     # ------------------------------------------------------------------
     # Algorithm metadata
@@ -69,12 +71,23 @@ class MaxLineInsidePolygon(QgsProcessingAlgorithm):
 
     def shortHelpString(self):
         return self.tr(
-            'Computes the most significant lines for each polygon in the input layer.\n\n'
-            'Outputs:\n'
+            'Computes the most significant lines and shape (morphometric) parameters '
+            'for each polygon in the input layer.\n\n'
+            'Line outputs:\n'
             '• Interior line: longest diagonal completely contained within the polygon.\n'
             '• Exterior line: longest diagonal between vertices that intersects the polygon.\n'
             '• Mid-point perpendicular: perpendicular to the interior line at its midpoint.\n'
             '• Maximum perpendicular: the widest parallel to the above that fits inside the polygon.\n\n'
+            'Morphometrics (summary polygon layer, one feature per input polygon):\n'
+            '• orient: dominant orientation (0–180°) from the minimum rotated rectangle.\n'
+            '• major_azim: azimuth (0–180°) of the interior line (major axis).\n'
+            '• mid_width / max_width: width at the midpoint and maximum width.\n'
+            '• elongation: major axis length / maximum width.\n'
+            '• compact: Polsby-Popper compactness 4·π·A / P² (1 = circle).\n'
+            '• rectang: rectangularity, area / minimum rotated rectangle area (1 = rectangle).\n'
+            '• convex: convexity, area / convex hull area (<1 with concavities/embayments).\n'
+            '• shape_idx: shape/crenulation index P / (2·√(π·A)) (1 = circle, grows with irregularity).\n\n'
+            'The morphometric attributes are also copied onto the interior line layer.\n\n'
             'Note: the algorithm uses a brute-force O(n²) approach over polygon vertices. '
             'For highly detailed polygons, consider simplifying the geometry beforehand.'
         )
@@ -112,6 +125,13 @@ class MaxLineInsidePolygon(QgsProcessingAlgorithm):
             )
         )
         self.addParameter(
+            QgsProcessingParameterBoolean(
+                self.CALC_MORPH,
+                self.tr('Calculate morphometric parameters (summary polygon layer)'),
+                defaultValue=True
+            )
+        )
+        self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUT_INT,
                 self.tr('Interior lines'),
@@ -139,26 +159,67 @@ class MaxLineInsidePolygon(QgsProcessingAlgorithm):
                 type=QgsProcessing.TypeVectorLine
             )
         )
+        self.addParameter(
+            QgsProcessingParameterFeatureSink(
+                self.OUT_MORPH,
+                self.tr('Morphometrics (summary polygons)'),
+                type=QgsProcessing.TypeVectorPolygon
+            )
+        )
 
     # ------------------------------------------------------------------
     # Main logic
     # ------------------------------------------------------------------
+    # Morphometric fields shared by the interior line and the summary layer.
+    _METRIC_FIELDS = [
+        ('orient',     QVariant.Double),
+        ('mid_width',  QVariant.Double),
+        ('max_width',  QVariant.Double),
+        ('elongation', QVariant.Double),
+        ('compact',    QVariant.Double),
+        ('rectang',    QVariant.Double),
+        ('convex',     QVariant.Double),
+        ('shape_idx',  QVariant.Double),
+    ]
+
     def processAlgorithm(self, parameters, context, feedback):
         source       = self.parameterAsSource(parameters, self.INPUT, context)
         calc_ext     = self.parameterAsBoolean(parameters, self.CALC_EXT, context)
         calc_perp    = self.parameterAsBoolean(parameters, self.CALC_PERP, context)
         calc_maxperp = self.parameterAsBoolean(parameters, self.CALC_MAXPERP, context)
+        calc_morph   = self.parameterAsBoolean(parameters, self.CALC_MORPH, context)
 
+        # Simple fields (id, length) for the exterior/perpendicular line layers.
         fields = QgsFields()
         fields.append(QgsField('id',     QVariant.Int))
         fields.append(QgsField('length', QVariant.Double))
 
+        # Interior line carries the morphometrics too (length == major axis length,
+        # azimuth == major axis azimuth).
+        fields_int = QgsFields()
+        fields_int.append(QgsField('id',      QVariant.Int))
+        fields_int.append(QgsField('length',  QVariant.Double))
+        fields_int.append(QgsField('azimuth', QVariant.Double))
+        for nm, tp in self._METRIC_FIELDS:
+            fields_int.append(QgsField(nm, tp))
+
+        # Summary polygon layer: one feature per input polygon.
+        fields_morph = QgsFields()
+        fields_morph.append(QgsField('id',         QVariant.Int))
+        fields_morph.append(QgsField('area',       QVariant.Double))
+        fields_morph.append(QgsField('perimeter',  QVariant.Double))
+        fields_morph.append(QgsField('major_len',  QVariant.Double))
+        fields_morph.append(QgsField('major_azim', QVariant.Double))
+        for nm, tp in self._METRIC_FIELDS:
+            fields_morph.append(QgsField(nm, tp))
+
         crs = source.sourceCrs()
 
-        (sink_int,     dest_int)     = self.parameterAsSink(parameters, self.OUT_INT,     context, fields, QgsWkbTypes.LineString, crs)
-        (sink_ext,     dest_ext)     = self.parameterAsSink(parameters, self.OUT_EXT,     context, fields, QgsWkbTypes.LineString, crs)
-        (sink_perp,    dest_perp)    = self.parameterAsSink(parameters, self.OUT_PERP,    context, fields, QgsWkbTypes.LineString, crs)
-        (sink_maxperp, dest_maxperp) = self.parameterAsSink(parameters, self.OUT_MAXPERP, context, fields, QgsWkbTypes.LineString, crs)
+        (sink_int,     dest_int)     = self.parameterAsSink(parameters, self.OUT_INT,     context, fields_int,   QgsWkbTypes.LineString, crs)
+        (sink_ext,     dest_ext)     = self.parameterAsSink(parameters, self.OUT_EXT,     context, fields,       QgsWkbTypes.LineString, crs)
+        (sink_perp,    dest_perp)    = self.parameterAsSink(parameters, self.OUT_PERP,    context, fields,       QgsWkbTypes.LineString, crs)
+        (sink_maxperp, dest_maxperp) = self.parameterAsSink(parameters, self.OUT_MAXPERP, context, fields,       QgsWkbTypes.LineString, crs)
+        (sink_morph,   dest_morph)   = self.parameterAsSink(parameters, self.OUT_MORPH,   context, fields_morph, QgsWkbTypes.Polygon,    crs)
 
         # --- Read polygons -------------------------------------------------------
         features = list(source.getFeatures())
@@ -214,19 +275,11 @@ class MaxLineInsidePolygon(QgsProcessingAlgorithm):
                             dout[fid] = line
                             m_out = dist
 
-        # --- Write interior and exterior lines -----------------------------------
-        for fid, line in din.items():
-            self._write_line(sink_int, fields, fid, line)
-
-        if calc_ext:
-            for fid, line in dout.items():
-                self._write_line(sink_ext, fields, fid, line)
-
         # --- Perpendiculars ------------------------------------------------------
-        if calc_perp:
-            dperp    = {}
-            max_perp = {}
+        dperp    = {}  # {fid: geometry}  mid-point perpendicular clipped to polygon
+        max_perp = {}  # {fid: geometry}  widest parallel inside the polygon
 
+        if calc_perp:
             for idx, (fid, v) in enumerate(din.items()):
                 if feedback.isCanceled():
                     break
@@ -269,29 +322,130 @@ class MaxLineInsidePolygon(QgsProcessingAlgorithm):
                         except Exception:
                             pass
 
-            if calc_perp:
-                for fid, line in dperp.items():
-                    self._write_line(sink_perp, fields, fid, line)
+        # --- Morphometric parameters ---------------------------------------------
+        metrics = {}  # {fid: {metric_name: value}}
+        for fid, poly in dpg.items():
+            if feedback.isCanceled():
+                break
 
-            if calc_maxperp:
-                for fid, line in max_perp.items():
-                    self._write_line(sink_maxperp, fields, fid, line)
+            area  = poly.area
+            perim = poly.length
+
+            # Major axis (interior line): length and azimuth folded to 0–180°.
+            if fid in din:
+                c = list(din[fid].coords)
+                major_len  = din[fid].length
+                major_azim = self._azimuth(c[0][0], c[0][1], c[1][0], c[1][1])
+            else:
+                major_len  = None
+                major_azim = None
+
+            # Widths from the perpendiculars (total length of the clipped section).
+            mid_width = dperp[fid].length    if fid in dperp    else None
+            max_width = max_perp[fid].length if fid in max_perp else None
+
+            # Elongation: major axis length / maximum width (fall back to mid width).
+            width_ref = max_width if max_width else mid_width
+            elongation = (major_len / width_ref) if (major_len and width_ref) else None
+
+            metrics[fid] = {
+                'area':       area,
+                'perimeter':  perim,
+                'major_len':  major_len,
+                'major_azim': major_azim,
+                'orient':     self._mrr_orientation(poly),
+                'mid_width':  mid_width,
+                'max_width':  max_width,
+                'elongation': elongation,
+                'compact':    (4.0 * math.pi * area / (perim ** 2)) if perim > 0 else None,
+                'rectang':    self._rectangularity(poly, area),
+                'convex':     (area / poly.convex_hull.area) if poly.convex_hull.area > 0 else None,
+                'shape_idx':  (perim / (2.0 * math.sqrt(math.pi * area))) if area > 0 else None,
+            }
+
+        # --- Write line layers ---------------------------------------------------
+        for fid, line in din.items():
+            m = metrics.get(fid, {})
+            attrs = [int(fid), float(line.length), m.get('major_azim')]
+            attrs += [m.get(nm) for nm, _ in self._METRIC_FIELDS]
+            self._write_geom(sink_int, fields_int, attrs, line)
+
+        if calc_ext:
+            for fid, line in dout.items():
+                self._write_line(sink_ext, fields, fid, line)
+
+        if calc_perp:
+            for fid, line in dperp.items():
+                self._write_line(sink_perp, fields, fid, line)
+
+        if calc_maxperp:
+            for fid, line in max_perp.items():
+                self._write_line(sink_maxperp, fields, fid, line)
+
+        # --- Write morphometric summary layer ------------------------------------
+        if calc_morph:
+            for fid, poly in dpg.items():
+                m = metrics[fid]
+                attrs = [int(fid), m['area'], m['perimeter'], m['major_len'], m['major_azim']]
+                attrs += [m.get(nm) for nm, _ in self._METRIC_FIELDS]
+                self._write_geom(sink_morph, fields_morph, attrs, poly)
 
         return {
             self.OUT_INT:     dest_int,
             self.OUT_EXT:     dest_ext,
             self.OUT_PERP:    dest_perp,
             self.OUT_MAXPERP: dest_maxperp,
+            self.OUT_MORPH:   dest_morph,
         }
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _azimuth(self, x1, y1, x2, y2):
+        """Compass azimuth of the segment (from North, clockwise), folded to 0–180°."""
+        return math.degrees(math.atan2(x2 - x1, y2 - y1)) % 180.0
+
+    def _mrr_orientation(self, poly):
+        """Dominant orientation (0–180°) from the longest side of the minimum
+        rotated rectangle. Robust against isolated vertices."""
+        try:
+            coords = list(poly.minimum_rotated_rectangle.exterior.coords)
+        except Exception:
+            return None
+        if len(coords) < 4:
+            return None
+        best_len = -1.0
+        best     = None
+        for i in range(len(coords) - 1):
+            (x1, y1), (x2, y2) = coords[i], coords[i + 1]
+            L = math.hypot(x2 - x1, y2 - y1)
+            if L > best_len:
+                best_len = L
+                best     = (x1, y1, x2, y2)
+        return self._azimuth(*best) if best else None
+
+    def _rectangularity(self, poly, area):
+        """Area divided by the area of the minimum rotated rectangle (1 = rectangle)."""
+        try:
+            rect_area = poly.minimum_rotated_rectangle.area
+        except Exception:
+            return None
+        return (area / rect_area) if rect_area > 0 else None
+
     def _write_line(self, sink, fields, fid, geom):
-        """Write a shapely geometry as a QgsFeature to a sink."""
+        """Write a shapely geometry as a QgsFeature (id, length) to a sink."""
         if geom is None or geom.is_empty:
             return
         feat = QgsFeature(fields)
         feat.setAttributes([int(fid), float(geom.length)])
+        feat.setGeometry(QgsGeometry.fromWkt(geom.wkt))
+        sink.addFeature(feat, QgsFeatureSink.FastInsert)
+
+    def _write_geom(self, sink, fields, attrs, geom):
+        """Write a shapely geometry with an explicit attribute list to a sink."""
+        if geom is None or geom.is_empty:
+            return
+        feat = QgsFeature(fields)
+        feat.setAttributes(attrs)
         feat.setGeometry(QgsGeometry.fromWkt(geom.wkt))
         sink.addFeature(feat, QgsFeatureSink.FastInsert)

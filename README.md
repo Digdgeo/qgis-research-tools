@@ -10,7 +10,9 @@ and are being developed with the goal of contributing them to the official QGIS 
 
 ### 1. Max Line Inside Polygon (`mlip_qgis.py`)
 
-Computes the most significant lines for each polygon in a vector layer:
+Computes the most significant lines **and shape (morphometric) parameters** for each polygon in a vector layer.
+
+**Line outputs:**
 
 | Output | Description |
 |--------|-------------|
@@ -18,6 +20,28 @@ Computes the most significant lines for each polygon in a vector layer:
 | **Exterior line** | Longest diagonal between vertices that intersects but is not fully inside the polygon |
 | **Mid-point perpendicular** | Perpendicular to the interior line, clipped to the polygon boundary |
 | **Maximum perpendicular** | The parallel to the above with the greatest length inside the polygon (maximum width) |
+
+**Morphometric output** — a summary polygon layer with one feature per input polygon (the same
+attributes are also copied onto the interior line layer):
+
+| Field | Formula / source | What it captures |
+|-------|------------------|------------------|
+| `area`, `perimeter` | polygon area and perimeter | basic size |
+| `major_len` | interior line length | length of the major axis |
+| `major_azim` | azimuth of the interior line, `0–180°` | orientation of the major axis |
+| `orient` | longest side of the minimum rotated rectangle, `0–180°` | **dominant orientation** (robust; `0°` = N–S, `90°` = E–W) |
+| `mid_width`, `max_width` | perpendicular lengths | width at midpoint / maximum width |
+| `elongation` | `major_len / max_width` | how elongated the shape is |
+| `compact` | Polsby-Popper `4·π·A / P²` | `1` = perfect circle |
+| `rectang` | `area / min. rotated rectangle area` | `≈1` = rectangle |
+| `convex` | `area / convex hull area` | `<1` with concavities / embayments |
+| `shape_idx` | `P / (2·√(π·A))` | `1` = circle, grows with boundary irregularity (crenulation) |
+
+> **Natural vs. artificial water bodies:** these indices help separate human-made geometric shapes
+> from natural ones. Artificial ponds tend to score high on `compact` (circular basins) **or** `rectang`
+> (rectangular irrigation ponds), while natural lagoons show low `convex` (embayments) and high
+> `shape_idx` (crenulated shorelines). The `orient` field is well suited to characterising dominant
+> orientations (e.g. a rose diagram of lagoon axes).
 
 > **Performance:** the algorithm compares all unique vertex pairs within each polygon (O(n²) complexity).
 > The number of comparisons is `n × (n-1) / 2`, so a polygon with 1,000 vertices produces ~500,000 comparisons.
@@ -137,6 +161,7 @@ No additional installation is needed.
 | Calculate exterior line | Boolean | Default: `True` |
 | Calculate mid-point perpendicular | Boolean | Default: `True` |
 | Calculate maximum perpendicular | Boolean | Default: `True` |
+| Calculate morphometric parameters | Boolean | Default: `True`. Produces the summary polygon layer and fills the shape fields on the interior line. |
 
 ---
 
